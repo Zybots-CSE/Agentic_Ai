@@ -1,18 +1,18 @@
-# This file runs the tournament between all the files in the /players folder.
-# It is game-agnostic in spirit: it delegates all rule logic to engine.playGame.
+# Single-table poker tournament — all players share every hand.
 
 import os
 import sys
 import importlib.util
 import threading
-from itertools import combinations
 
-from engine import GameLogger, playGame
+from engine import GameLogger, playHand, STARTING_STACK
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-GAMES_PER_MATCHUP = 100
+HANDS_PER_TOURNAMENT = 100
+MIN_PLAYERS = 2
+MAX_PLAYERS = 10
 MOVE_TIMEOUT_SECONDS = 2.0
 PLAYERS_DIR = os.path.join(os.path.dirname(__file__), "players")
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -52,12 +52,7 @@ def with_move_timeout(next_move, timeout=MOVE_TIMEOUT_SECONDS):
 # Player loading
 # ---------------------------------------------------------------------------
 def load_players(players_dir):
-    """Scan *players_dir* for .py files and import their nextMove functions.
-
-    Returns a dict  {player_name: nextMove_function}.
-    Files starting with '_' or named 'example_player.py' are skipped.
-    Each nextMove is wrapped with with_move_timeout.
-    """
+    """Scan *players_dir* for .py files and import their nextMove functions."""
     players = {}
 
     for filename in sorted(os.listdir(players_dir)):
@@ -93,59 +88,37 @@ def load_players(players_dir):
 # Tournament
 # ---------------------------------------------------------------------------
 def run_tournament():
-    """Run a full round-robin tournament and print the leaderboard."""
-
     os.makedirs(LOGS_DIR, exist_ok=True)
 
     players = load_players(PLAYERS_DIR)
+    count = len(players)
 
-    if len(players) < 2:
-        print("Need at least 2 players in the /players folder to run a tournament.")
+    if count < MIN_PLAYERS:
+        print(f"Need at least {MIN_PLAYERS} players in /players to run a tournament.")
+        sys.exit(1)
+    if count > MAX_PLAYERS:
+        print(f"At most {MAX_PLAYERS} players allowed; found {count}.")
         sys.exit(1)
 
-    scores = {name: 0.0 for name in players}
-    matchups = list(combinations(sorted(players.keys()), 2))
-    total_matchups = len(matchups)
+    scores = {name: 0 for name in sorted(players)}
+    log_path = os.path.join(LOGS_DIR, "tournament.log")
+    logger = GameLogger(log_path)
+    hand_history = []
 
-    for idx, (nameA, nameB) in enumerate(matchups, start=1):
-        funcA = players[nameA]
-        funcB = players[nameB]
+    print(
+        f"\nStarting tournament: {count} players, "
+        f"{HANDS_PER_TOURNAMENT} hands, {STARTING_STACK} chips/hand\n"
+    )
 
-        log_path = os.path.join(LOGS_DIR, f"{nameA}_vs_{nameB}.log")
-        logger = GameLogger(log_path)
+    for hand_num in range(1, HANDS_PER_TOURNAMENT + 1):
+        logger.start_hand(hand_num)
+        ending = playHand(players, logger, hand_num, hand_history=hand_history)
+        for name, stack in ending.items():
+            scores[name] += stack
+        if hand_num % 10 == 0 or hand_num == HANDS_PER_TOURNAMENT:
+            print(f"  Hand {hand_num}/{HANDS_PER_TOURNAMENT} complete")
 
-        print(f"\nMatchup {idx}/{total_matchups}: {nameA} vs {nameB}")
-
-        a_wins = 0
-        b_wins = 0
-        draws = 0
-
-        for game_num in range(1, GAMES_PER_MATCHUP + 1):
-            logger.start_game(game_num)
-
-            if game_num % 2 == 1:
-                result = playGame(nameA, funcA, nameB, funcB, logger)
-                if result == 1:
-                    a_wins += 1
-                elif result == 2:
-                    b_wins += 1
-                else:
-                    draws += 1
-            else:
-                result = playGame(nameB, funcB, nameA, funcA, logger)
-                if result == 1:
-                    b_wins += 1
-                elif result == 2:
-                    a_wins += 1
-                else:
-                    draws += 1
-
-        logger.flush()
-
-        scores[nameA] += a_wins + 0.5 * draws
-        scores[nameB] += b_wins + 0.5 * draws
-
-        print(f"  {nameA} wins: {a_wins}  |  {nameB} wins: {b_wins}  |  Draws: {draws}")
+    logger.flush()
 
     print("\n" + "=" * 40)
     print("         FINAL LEADERBOARD")
@@ -153,12 +126,13 @@ def run_tournament():
 
     ranking = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     for rank, (name, score) in enumerate(ranking, start=1):
-        print(f"  {rank}. {name:<20} {score:>7.1f} pts")
+        print(f"  {rank}. {name:<20} {score:>12.0f} chips")
 
     print("=" * 40)
 
     csv_path = os.path.join(LOGS_DIR, "leaderboard.csv")
     GameLogger.write_leaderboard_csv(csv_path, scores)
+    print(f"Tournament log: {log_path}")
     print(f"Leaderboard CSV: {csv_path}")
 
 
